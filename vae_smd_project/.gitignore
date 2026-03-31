@@ -1,0 +1,154 @@
+# =============================================================================
+# .gitignore for VAE SMD anomaly-detection research project
+# Python / PyTorch / Jupyter — no build system
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# DATA — ServerMachineDataset is hundreds of MB; never commit raw data
+# -----------------------------------------------------------------------------
+data/
+
+
+# -----------------------------------------------------------------------------
+# EXPERIMENT RESULTS — generated at runtime; includes .npy arrays, .pt
+# checkpoints inside run dirs, .csv training histories, .json summaries,
+# and .png figures produced by plot_results.py
+# -----------------------------------------------------------------------------
+results/
+
+
+# -----------------------------------------------------------------------------
+# MODEL CHECKPOINTS — top-level .pt files written by the notebook and
+# train_compare.py (e.g. vae_smd_trained.pt, machine-1-1_tcn.pt)
+# -----------------------------------------------------------------------------
+*.pt
+
+
+# -----------------------------------------------------------------------------
+# GENERATED FIGURES — loss_curves.png, train_error_dist.png,
+# anomaly_detection_result.png and any other runtime-generated images
+# -----------------------------------------------------------------------------
+*.png
+*.jpg
+*.jpeg
+*.svg
+
+
+# -----------------------------------------------------------------------------
+# RESEARCH PAPER BINARIES / PDFs in foragent/ — binary files, not source
+# The paper/ directory (paper.tex, refs.bib) is explicitly tracked below.
+# -----------------------------------------------------------------------------
+foragent/
+
+
+# -----------------------------------------------------------------------------
+# PYTHON BYTECODE
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+
+# -----------------------------------------------------------------------------
+# JUPYTER CHECKPOINTS — auto-saved by Jupyter, not source
+# -----------------------------------------------------------------------------
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+
+# -----------------------------------------------------------------------------
+# VIRTUAL ENVIRONMENTS
+# -----------------------------------------------------------------------------
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+
+# -----------------------------------------------------------------------------
+# ENVIRONMENT / SECRETS — never commit credentials or local env vars
+# -----------------------------------------------------------------------------
+.env
+*.env
+.env.local
+.env.*.local
+secrets.json
+credentials.json
+
+
+# -----------------------------------------------------------------------------
+# PYTHON PACKAGING ARTIFACTS
+# -----------------------------------------------------------------------------
+*.egg-info/
+dist/
+build/
+*.egg
+MANIFEST
+pip-wheel-metadata/
+*.whl
+
+
+# -----------------------------------------------------------------------------
+# OMC / CLAUDE INTERNAL STATE — agent orchestration state, not source code
+# -----------------------------------------------------------------------------
+.omc/
+.claude/
+
+
+# -----------------------------------------------------------------------------
+# EDITOR / IDE ARTIFACTS
+# -----------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+# -----------------------------------------------------------------------------
+# PYTEST / COVERAGE
+# -----------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+
+# -----------------------------------------------------------------------------
+# MYPY / TYPE CHECKERS
+# -----------------------------------------------------------------------------
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+
+# =============================================================================
+# EXPLICIT INCLUSIONS (force-track even if a parent pattern would ignore them)
+# These are the files that MUST be committed.
+# =============================================================================
+
+# Source code
+!*.py
+
+# Notebooks
+!*.ipynb
+
+# Project documentation and config
+!requirements.txt
+!CLAUDE.md
+!RESEARCH_PLAN.md
+!primer.md
+!README.md
+
+# Paper source (LaTeX) — paper/ dir is tracked; only binaries excluded
+!paper/
+!paper/*.tex
+!paper/*.bib
+!paper/*.cls
+!paper/*.sty

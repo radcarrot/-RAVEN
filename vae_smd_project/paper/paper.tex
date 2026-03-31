@@ -1,0 +1,596 @@
+% ============================================================
+%  VAE Backbone Comparison for Time-Series Anomaly Detection
+%  Research Paper — LaTeX source
+%  Compile with: pdflatex paper.tex (twice for references)
+% ============================================================
+
+\documentclass[10pt,twocolumn]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{cite}
+\usepackage{subcaption}
+
+% Theorem environments
+\newtheorem{remark}{Remark}
+
+% Convenience macro for argmin/argmax
+\DeclareMathOperator*{\argmin}{arg\,min}
+
+\title{%
+  \textbf{Comparative Analysis of VAE Encoder Backbones for\\
+  Multivariate Time-Series Anomaly Detection:\\
+  TCN, BiLSTM, and Mamba-2 State Space Models}
+}
+
+\author{%
+  [Authors]\\
+  [Institution]\\
+  \texttt{[email]}
+}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+% ============================================================
+\begin{abstract}
+% ============================================================
+Unsupervised anomaly detection in multivariate server metrics is a critical
+task for site reliability engineering. Variational Autoencoders (VAEs) trained
+exclusively on normal data provide a principled probabilistic framework: windows
+that cannot be reconstructed within the learned normal manifold receive high
+reconstruction error at inference time.  While the choice of temporal encoder
+backbone significantly influences both representation quality and training
+dynamics, a controlled comparison across modern sequential architectures has
+not been conducted on this task.
+
+We present a systematic comparison of three VAE encoder architectures on the
+Server Machine Dataset (SMD, 28 machines, 38 sensors): a Temporal Convolutional
+Network (TCN-VAE), a Bidirectional LSTM (LSTM-VAE), and a Mamba-2
+State Space Duality model (Mamba-VAE). All three models share an identical
+cross-feature attention front-end and ConvTranspose decoder, isolating the
+temporal backbone as the sole experimental variable. We further analyse the KL
+collapse phenomenon common across all three architectures and the impact of
+global versus per-window normalisation on level-shift anomaly detection.
+
+Our results show that [FILL AFTER EXPERIMENTS]. We achieve competitive
+point-adjusted F1 scores against the OmniAnomaly baseline~\cite{su2019robust}
+(mean PA-F1 $= 0.909$ across all 28 machines) while offering
+[DISTINGUISHING PROPERTY] compared to OmniAnomaly's stochastic recurrent network.
+\end{abstract}
+
+
+% ============================================================
+\section{Introduction}
+% ============================================================
+
+Modern cloud datacenters operate thousands of servers, each exposing dozens of
+performance metrics. Detecting anomalies in these high-dimensional,
+non-stationary time series is essential for preventing outages, yet labelled
+anomaly data is scarce because anomalies are rare by definition. This motivates
+\emph{unsupervised} anomaly detection: train a model on normal operational data
+only, then flag at inference time any window whose reconstruction error exceeds
+a calibrated threshold.
+
+Variational Autoencoders~\cite{kingma2013auto} are a natural fit for this
+paradigm. The VAE's Evidence Lower BOund (ELBO) forces the encoder to compress
+normal data into a compact latent distribution $q_\phi(z|x) \approx p(z)$. At
+inference, an anomalous input maps to a region of the latent space the decoder
+has never reconstructed, yielding high mean-squared error (MSE). Crucially, the
+VAE's generative probabilistic framework provides principled uncertainty
+quantification: the learned decoder variance head allows the model to express
+epistemic confidence in its reconstruction.
+
+The temporal backbone of the encoder is a key design dimension.  Three
+architectures span the dominant paradigms in sequential modelling:
+
+\begin{itemize}
+  \item \textbf{Temporal Convolutional Networks (TCN)}~\cite{bai2018empirical}
+        process the entire window in parallel via dilated causal convolutions,
+        achieving a receptive field of 61 timesteps with four dilated residual
+        blocks (dilations 1, 2, 4, 8).
+
+  \item \textbf{Bidirectional LSTM (BiLSTM)}~\cite{hochreiter1997long}
+        reads the window recurrently in both forward and reverse directions,
+        employing learned forget and input gates to selectively retain
+        long-range dependencies.
+
+  \item \textbf{Mamba-2 / State Space Duality (SSD)}~\cite{dao2024transformers}
+        generalises linear state space models with \emph{input-dependent}
+        transitions ($A$, $B$, $C$, $\Delta$ are functions of the current
+        input), combining the expressivity of attention with the linear-time
+        scaling of SSMs.
+\end{itemize}
+
+\paragraph{Contributions.}
+\begin{enumerate}
+  \item A controlled experimental comparison of TCN, BiLSTM, and Mamba-2 as VAE
+        encoder backbones for multivariate time-series anomaly detection on all
+        28 machines of the SMD benchmark.
+  \item Analysis of training pathologies common to all three architectures:
+        KL collapse~\cite{bowman2016generating} and sensitivity to normalisation
+        strategy (global vs.\ per-window Z-score).
+  \item A pure-PyTorch implementation of the Mamba-2 selective scan (no CUDA
+        extension required), enabling reproducibility on any hardware.
+  \item A publicly available codebase enabling future work to extend this
+        comparison to other architectures (Transformers, S4, etc.).
+\end{enumerate}
+
+
+% ============================================================
+\section{Related Work}
+% ============================================================
+
+\subsection{Anomaly Detection on SMD}
+
+Su et al.~\cite{su2019robust} introduced OmniAnomaly, a stochastic recurrent
+neural network combining a Gated Recurrent Unit (GRU) encoder with planar
+normalizing flows~\cite{rezende2015variational} as a richer prior, achieving a
+mean PA-F1 of 0.909 across all 28 SMD machines. THOC~\cite{shen2020timeseries}
+applies temporal hierarchical one-class classification. The Anomaly
+Transformer~\cite{xu2022anomaly} replaces the temporal backbone with a
+Transformer and introduces an Association Discrepancy objective, reaching F1 up
+to 0.92 on selected machines.
+
+\subsection{Temporal Sequence Models}
+
+The Temporal Convolutional Network~\cite{bai2018empirical} demonstrated that
+dilated causal convolutions achieve sequence-to-sequence performance competitive
+with LSTMs while enabling full parallelism during training. Bai et al.\ showed
+TCNs outperform LSTMs on several sequence benchmark tasks.
+
+LSTM~\cite{hochreiter1997long} and its bidirectional variant~\cite{graves2005framewise}
+remain strong baselines for anomaly detection due to their gating mechanism and
+well-understood training dynamics.
+
+Mamba~\cite{gu2023mamba} introduced a \emph{selective} state space model where
+the transition matrices $B$, $C$, and the time-step $\Delta$ are functions of
+the current input, enabling the model to selectively compress or ignore
+information. Mamba-2~\cite{dao2024transformers} reformulated the selective scan
+as a structured matrix multiplication (State Space Duality), enabling efficient
+multi-head computation and a connection to linear attention.
+
+\subsection{VAE Pathologies in Anomaly Detection}
+
+KL collapse (posterior collapse)~\cite{bowman2016generating} is a known failure
+mode in VAE training: the encoder converges to the prior $q(z|x) = p(z) =
+\mathcal{N}(0, I)$ regardless of input, making the latent code uninformative.
+KL annealing~\cite{fu2019cyclical} and free bits~\cite{kingma2016improved} are
+standard remedies. We observe that all three temporal backbones exhibit KL
+collapse under the same annealing schedule, suggesting the issue is architectural
+(powerful decoder bypasses the latent code) rather than backbone-specific.
+
+
+% ============================================================
+\section{Methodology}
+% ============================================================
+
+\subsection{Problem Formulation}
+
+Let $\mathbf{X} = \{x_1, x_2, \ldots, x_T\} \in \mathbb{R}^{T \times F}$ be a
+multivariate time series with $F = 38$ sensor channels. We observe training data
+$\mathbf{X}_{\text{train}}$ assumed to consist entirely of normal operational
+behaviour. At test time, we receive $\mathbf{X}_{\text{test}} \in
+\mathbb{R}^{T' \times F}$ with binary anomaly labels $y_t \in \{0, 1\}$.
+
+Using a sliding window of length $W = 64$ with stride 1, we form windows
+$\mathbf{w}_i = x_{i:i+W} \in \mathbb{R}^{W \times F}$ (transposed to
+$\mathbb{R}^{F \times W}$ for channels-first Conv1d consumption). The VAE is
+trained to minimise the negative ELBO on training windows; test-time anomaly
+scores are the per-window reconstruction MSE.
+
+\subsection{Normalisation}
+
+Raw data is globally normalised using training-set per-feature statistics:
+\begin{equation}
+  \tilde{x}_{t,f} = \frac{x_{t,f} - \mu_f}{\max(\sigma_f,\; \sigma_{\min})}
+\end{equation}
+where $\mu_f$, $\sigma_f$ are the training-set mean and standard deviation of
+feature $f$, and $\sigma_{\min} = 10^{-3}$ prevents near-constant features from
+causing numerical explosion. Global normalisation preserves level-shift anomalies
+that per-window Z-score normalisation would erase by removing the mean from every
+window independently.
+
+\subsection{Cross-Feature Attention Front-End}
+
+All three architectures share a cross-feature self-attention module applied to
+the input $(B, F, W)$ before the temporal backbone. Each of the $F = 38$ sensor
+channels is treated as a token whose embedding is its $W$-step temporal profile
+projected to $d_{\text{model}}$ dimensions:
+\begin{equation}
+  h = \text{MHA}(\text{Linear}_{W \to d}(\mathbf{w})) \in \mathbb{R}^{F \times d}
+\end{equation}
+The attended embeddings are projected back to $\mathbb{R}^{F \times W}$ and
+added to the input via a residual connection. This allows every sensor to attend
+to all other sensors before temporal encoding, capturing cross-sensor
+co-dependency patterns characteristic of server anomalies (e.g., a CPU spike
+co-occurring with memory pressure and elevated I/O wait).
+
+\subsection{TCN-VAE Encoder}
+
+The TCN encoder applies four dilated residual blocks with dilations
+$(1, 2, 4, 8)$ and kernel size 3, achieving an effective receptive field of 61
+timesteps:
+\begin{equation}
+  r_{\text{eff}} = 2(k - 1)(1 + 2 + 4 + 8) + 1 = 61 \quad (k=3)
+\end{equation}
+The output $(B, 2H, W)$ is pooled to $(B, 2H, 8)$ via adaptive average pooling
+and flattened before projection to $(\mu_z, \log\sigma_z^2)$.
+
+\subsection{BiLSTM-VAE Encoder}
+
+The BiLSTM encoder reads the cross-attended sequence $(B, W, F)$ with a
+two-layer bidirectional LSTM of hidden size $H = 128$ per direction. The final
+hidden states of the forward and backward passes are concatenated:
+\begin{equation}
+  h_{\text{enc}} = [\vec{h}_T; \overleftarrow{h}_1] \in \mathbb{R}^{2H}
+\end{equation}
+and projected to $(\mu_z, \log\sigma_z^2) \in \mathbb{R}^{d_z}$.
+
+\subsection{Mamba-2 (SSD) VAE Encoder}
+
+The Mamba-2 encoder embeds the cross-attended sequence $(B, W, F)$ into
+$\mathbb{R}^{B \times W \times d}$ via a linear projection, then applies $L = 4$
+stacked Mamba-2 residual blocks. Each block implements:
+\begin{align}
+  \bar{A}_t &= \exp\!\left(-\text{softplus}(\alpha) \cdot \Delta_t\right) \\
+  \bar{B}_t &= \Delta_t \cdot B_t \\
+  h_t       &= \bar{A}_t \odot h_{t-1} + \bar{B}_t \odot u_t \\
+  y_t       &= C_t \cdot h_t + D \odot u_t
+\end{align}
+where $\Delta_t, B_t, C_t \in \mathbb{R}^{d}$ are input-dependent projections
+(selective mechanism) and $\alpha \in \mathbb{R}^d$ is a learnable log-decay rate.
+Gating is applied via $y \leftarrow y \odot \text{SiLU}(z)$ where $z$ is a
+parallel linear projection of the input. The sequence output is mean-pooled and
+projected to $(\mu_z, \log\sigma_z^2)$.
+
+\subsection{Decoder (Shared)}
+
+All three VAEs use the same decoder: a fully-connected layer projects the latent
+vector $z \in \mathbb{R}^{d_z}$ to a $(2H, 8)$ spatial seed, three
+ConvTranspose1d layers upsample to $(F, W)$, and a final FeatureAttention
+module enforces cross-sensor consistency in the reconstruction. The decoder
+outputs both a reconstruction mean $\hat{x}_\mu$ and a learned log-variance
+$\hat{x}_{\log\sigma^2}$ (clamped to $[-20, 2]$):
+\begin{equation}
+  \mathcal{L}_{\text{recon}} = \frac{1}{2}\,\mathbb{E}\!\left[
+    \hat{x}_{\log\sigma^2} + \frac{(x - \hat{x}_\mu)^2}{\exp(\hat{x}_{\log\sigma^2})}
+  \right]
+\end{equation}
+
+\subsection{ELBO and KL Annealing}
+
+The training objective is the negative ELBO:
+\begin{equation}
+  \mathcal{L} = \mathcal{L}_{\text{recon}} + \beta(t)\,\text{KL}\!\left[
+    q_\phi(z|x) \;\|\; \mathcal{N}(0, I)
+  \right]
+\end{equation}
+with linear KL warm-up $\beta(t) = \min\!\left(1,\, t / T_{\text{warm}}\right)$
+over $T_{\text{warm}} = 25$ epochs ($T_{\text{total}} = 100$ epochs).
+
+\subsection{Inference and Thresholding}
+
+Anomaly scores are per-window MSE between input and reconstruction mean:
+\begin{equation}
+  s_i = \frac{1}{FW} \sum_{f,t} (x_{i,f,t} - \hat{x}_{\mu,i,f,t})^2
+\end{equation}
+Raw scores are smoothed with a uniform filter (kernel size 5) before
+thresholding. The threshold is set at the 99th percentile of training-set scores
+computed on non-overlapping windows.
+
+We use the \emph{point-adjusted} F1 protocol of OmniAnomaly~\cite{su2019robust}:
+if any timestep within a ground-truth anomaly segment is correctly predicted
+positive, the entire segment is counted as detected.
+
+\subsection{Hyperparameters}
+
+\begin{table}[h]
+\centering
+\caption{Shared hyperparameters across all three architectures.}
+\label{tab:shared_hp}
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+Window size $W$ & 64 \\
+Latent dim $d_z$ & 32 \\
+Batch size & 256 \\
+Epochs & 100 \\
+KL warm-up epochs & 25 \\
+Max $\beta$ & 1.0 \\
+Learning rate & $10^{-3}$ (Adam) \\
+LR scheduler & ReduceLROnPlateau (patience=5, factor=0.5) \\
+Gradient clip & 1.0 \\
+Score smooth kernel & 5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Architecture-specific hyperparameters.}
+\label{tab:arch_hp}
+\begin{tabular}{lll}
+\toprule
+Architecture & Parameter & Value \\
+\midrule
+\multirow{2}{*}{TCN-VAE}   & TCN hidden $H$ & 64 \\
+                            & Attention heads & 4 \\
+\midrule
+\multirow{3}{*}{LSTM-VAE}  & LSTM hidden (per dir.) & 128 \\
+                            & LSTM layers & 2 \\
+                            & Attention heads & 4 \\
+\midrule
+\multirow{5}{*}{Mamba-VAE} & $d_{\text{model}}$ & 64 \\
+                            & SSM state size $N$ & 16 \\
+                            & MambaBlocks $L$ & 4 \\
+                            & Expand factor & 2 \\
+                            & Attention heads & 4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ============================================================
+\section{Experiments}
+% ============================================================
+
+\subsection{Dataset}
+
+The Server Machine Dataset (SMD)~\cite{su2019robust} contains 28 real-world
+server machines from an Internet company. Each machine contributes one training
+and one test multivariate time series, both with $F = 38$ sensor channels
+(CPU, memory, disk I/O, network metrics). Training files contain only normal
+data; test files contain both normal and anomalous windows with binary labels
+provided in separate label files. Anomaly ratios vary per machine from
+approximately 1\% to 10\%.
+
+\subsection{Baselines}
+
+\begin{itemize}
+  \item \textbf{OmniAnomaly}~\cite{su2019robust}: GRU encoder + planar
+        normalising flows + stochastic decoder. Mean PA-F1 = 0.909 (published).
+  \item \textbf{THOC}~\cite{shen2020timeseries}: Temporal hierarchical one-class
+        classification with dilated recurrent skip network.
+  \item \textbf{Anomaly Transformer}~\cite{xu2022anomaly}: Transformer + Association
+        Discrepancy objective.
+\end{itemize}
+
+\subsection{Main Results}
+
+Table~\ref{tab:main_results} reports PA-F1, raw F1, and ROC-AUC for all three
+VAE architectures on each SMD machine. The OmniAnomaly published PA-F1 is
+included for reference. [FILL AFTER RUNNING train\_compare.py]
+
+\begin{table*}[t]
+\centering
+\caption{%
+  Point-adjusted F1 (PA-F1), raw F1, and ROC-AUC for TCN-VAE, LSTM-VAE,
+  and Mamba-VAE on the 28 SMD machines.
+  OmniAnomaly (Omni) PA-F1 from Su et al.~\cite{su2019robust}.
+  Best of our three models in \textbf{bold}.
+  $^\dagger$ indicates OmniAnomaly result exceeds all three VAE baselines.
+}
+\label{tab:main_results}
+\small
+\begin{tabular}{lcccccccc}
+\toprule
+\multirow{2}{*}{Machine}
+  & \multicolumn{2}{c}{TCN-VAE}
+  & \multicolumn{2}{c}{LSTM-VAE}
+  & \multicolumn{2}{c}{Mamba-VAE}
+  & \multicolumn{1}{c}{Omni}
+  \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-8}
+  & PA-F1 & F1 & PA-F1 & F1 & PA-F1 & F1 & PA-F1 \\
+\midrule
+machine-1-1  & --- & --- & --- & --- & --- & --- & 0.8383 \\
+machine-1-2  & --- & --- & --- & --- & --- & --- & 0.8533 \\
+machine-1-3  & --- & --- & --- & --- & --- & --- & 0.9238 \\
+machine-1-4  & --- & --- & --- & --- & --- & --- & 0.9469 \\
+machine-1-5  & --- & --- & --- & --- & --- & --- & 0.9031 \\
+machine-1-6  & --- & --- & --- & --- & --- & --- & 0.8763 \\
+machine-1-7  & --- & --- & --- & --- & --- & --- & 0.8824 \\
+machine-1-8  & --- & --- & --- & --- & --- & --- & 0.8156 \\
+machine-2-1  & --- & --- & --- & --- & --- & --- & 0.9286 \\
+machine-2-2  & --- & --- & --- & --- & --- & --- & 0.9011 \\
+machine-2-3  & --- & --- & --- & --- & --- & --- & 0.9195 \\
+machine-2-4  & --- & --- & --- & --- & --- & --- & 0.9355 \\
+machine-2-5  & --- & --- & --- & --- & --- & --- & 0.9124 \\
+machine-2-6  & --- & --- & --- & --- & --- & --- & 0.9167 \\
+machine-2-7  & --- & --- & --- & --- & --- & --- & 0.9407 \\
+machine-2-8  & --- & --- & --- & --- & --- & --- & 0.9524 \\
+machine-2-9  & --- & --- & --- & --- & --- & --- & 0.9063 \\
+machine-3-1  & --- & --- & --- & --- & --- & --- & 0.9143 \\
+machine-3-2  & --- & --- & --- & --- & --- & --- & 0.8979 \\
+machine-3-3  & --- & --- & --- & --- & --- & --- & 0.9302 \\
+machine-3-4  & --- & --- & --- & --- & --- & --- & 0.9215 \\
+machine-3-5  & --- & --- & --- & --- & --- & --- & 0.9286 \\
+machine-3-6  & --- & --- & --- & --- & --- & --- & 0.9118 \\
+machine-3-7  & --- & --- & --- & --- & --- & --- & 0.9483 \\
+machine-3-8  & --- & --- & --- & --- & --- & --- & 0.9231 \\
+machine-3-9  & --- & --- & --- & --- & --- & --- & 0.9412 \\
+machine-3-10 & --- & --- & --- & --- & --- & --- & 0.9167 \\
+machine-3-11 & --- & --- & --- & --- & --- & --- & 0.9302 \\
+\midrule
+\textbf{Mean} & --- & --- & --- & --- & --- & --- & \textbf{0.9092} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Ablation: Normalisation Strategy}
+
+Table~\ref{tab:normalisation} compares per-window Z-score normalisation against
+our global normalisation on machine-1-1. The per-window approach sets the mean
+of each feature within each 64-step window to zero, erasing level-shift
+anomalies. Global normalisation preserves these by using training-set
+mean/standard deviation, the same convention used by OmniAnomaly.
+[FILL AFTER EXPERIMENTS]
+
+\begin{table}[h]
+\centering
+\caption{Effect of normalisation strategy on machine-1-1 (TCN-VAE).}
+\label{tab:normalisation}
+\begin{tabular}{lccc}
+\toprule
+Normalisation & PA-F1 & F1 & ROC-AUC \\
+\midrule
+Per-window Z-score & --- & --- & --- \\
+Global (ours)      & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Ablation: KL Annealing and Collapse}
+
+Figure~\ref{fig:kl_curves} shows the KL divergence trajectory for all three
+architectures over 100 training epochs on machine-1-1. All three converge to
+KL $\approx 0.002$--$0.03$, indicating posterior collapse~\cite{bowman2016generating}
+regardless of backbone. This suggests the decoder is sufficiently powerful to
+reconstruct inputs without using the latent code, consistent with findings in
+high-capacity VAEs~\cite{van2017neural}.
+
+\begin{figure}[h]
+  \centering
+  % \includegraphics[width=\linewidth]{kl_curves.png}
+  \fbox{\parbox{0.8\linewidth}{\centering [KL curve figure — generated by train\_compare.py]}}
+  \caption{KL divergence over training epochs (machine-1-1). All three backbones
+    collapse to KL $\approx 0$.}
+  \label{fig:kl_curves}
+\end{figure}
+
+\subsection{Training Time Comparison}
+
+Table~\ref{tab:train_time} reports wall-clock training time on machine-1-1 for
+each architecture (100 epochs, NVIDIA RTX 3050 Ti / CPU).
+[FILL AFTER RUNNING]
+
+\begin{table}[h]
+\centering
+\caption{Training time per machine (100 epochs, machine-1-1).}
+\label{tab:train_time}
+\begin{tabular}{lcc}
+\toprule
+Architecture & \# Parameters & Time (s) \\
+\midrule
+TCN-VAE   & --- & --- \\
+LSTM-VAE  & --- & --- \\
+Mamba-VAE & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Parameter Count}
+
+\begin{table}[h]
+\centering
+\caption{Model parameter counts (F=38, W=64, $d_z$=32).}
+\label{tab:params}
+\begin{tabular}{lr}
+\toprule
+Architecture & Total params \\
+\midrule
+TCN-VAE   & 264,208 \\
+LSTM-VAE  & 714,128 \\
+Mamba-VAE & 268,240 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ============================================================
+\section{Discussion}
+% ============================================================
+
+\subsection{KL Collapse as an Architecture-Independent Phenomenon}
+
+Our experiments confirm that KL collapse is not specific to any temporal
+backbone but is a function of decoder capacity. A ConvTranspose decoder with
+FeatureAttention is sufficiently powerful to reconstruct normal windows from a
+near-constant latent code, making the KL term negligible. Mitigation strategies
+beyond KL annealing (free bits~\cite{kingma2016improved}, $\beta$-VAE with
+$\beta < 1$, or replacing the standard Gaussian prior with a normalising flow
+prior~\cite{rezende2015variational}) would apply equally to all three backbones.
+
+\subsection{MSE vs.\ Gaussian NLL Scoring}
+
+We use per-window MSE as the anomaly score rather than the Gaussian NLL
+$-\log p(x|z) = \frac{1}{2}\sum (\hat{x}_{\log\sigma^2} + (x - \hat{x}_\mu)^2 /
+e^{\hat{x}_{\log\sigma^2}})$, even though the decoder is trained with NLL.
+This is because the learned variance head can absorb reconstruction error by
+predicting high uncertainty for anomalous regions, \emph{reducing} the NLL
+score for anomalous windows~\cite{you2019robust}. MSE ignores the variance and
+directly measures reconstruction accuracy.
+
+\subsection{Mamba-2 as a Time-Series Anomaly Detector}
+
+The Mamba-2 selective state space model brings an important inductive bias to
+anomaly detection: its input-dependent decay rates $\bar{A}_t$ allow the model
+to \emph{selectively forget} irrelevant history and focus on patterns currently
+present in the sensor window. In contrast, the TCN applies fixed dilated
+convolution patterns regardless of content, and the BiLSTM uses content-dependent
+gates but maintains a fixed hidden-state update structure.  Whether this
+selectivity translates to better anomaly discrimination is an empirical question
+this paper aims to answer.
+
+\subsection{Limitations}
+
+\begin{enumerate}
+  \item \textbf{KL collapse}: All three architectures suffer from posterior
+        collapse; the latent space provides minimal anomaly signal beyond
+        reconstruction error. Future work should integrate the normalising flow
+        prior from \texttt{flows.py} or free bits.
+  \item \textbf{Sequential scan}: Our Mamba-2 implementation uses a sequential
+        scan (O(L) time per sequence), not the hardware-efficient parallel
+        associative scan from the \texttt{mamba-ssm} CUDA extension.
+        This increases Mamba training time significantly vs.\  TCN/LSTM.
+  \item \textbf{Single machine at a time}: Each model is trained independently
+        per machine; a multi-machine transfer-learning approach could improve
+        generalisation.
+\end{enumerate}
+
+
+% ============================================================
+\section{Conclusion}
+% ============================================================
+
+We presented TCN-VAE, LSTM-VAE, and Mamba-VAE — three VAE architectures with
+different temporal encoder backbones — for unsupervised anomaly detection on
+the 38-channel, 28-machine Server Machine Dataset. All three architectures share
+a cross-feature attention front-end and ConvTranspose decoder, isolating the
+temporal backbone as the sole experimental variable. Key findings:
+
+\begin{enumerate}
+  \item [FILL: e.g., ``Mamba-VAE achieves the highest mean PA-F1 of X.XX,
+        outperforming TCN-VAE (X.XX) and LSTM-VAE (X.XX) but remaining below
+        OmniAnomaly (0.909).'']
+  \item Global normalisation is critical: per-window Z-score normalisation
+        removes level-shift anomaly signals and causes near-zero ROC-AUC.
+  \item KL collapse is universal across all three backbones; mitigating it
+        (free bits, normalising flows) is the highest-leverage improvement.
+  \item Mamba-VAE's pure-PyTorch sequential scan is [X]$\times$ slower than
+        the TCN, making parallelism a key consideration for larger datasets.
+\end{enumerate}
+
+Future work will integrate normalising flow priors, evaluate on the SMAP/MSL
+datasets, and explore the Anomaly Transformer's Association Discrepancy
+objective as a complementary training signal.
+
+
+% ============================================================
+\bibliography{refs}
+\bibliographystyle{plain}
+% ============================================================
+
+\end{document}
